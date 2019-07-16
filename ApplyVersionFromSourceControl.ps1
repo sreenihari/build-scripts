@@ -5,53 +5,30 @@
 
 		Powershell script to be used as the pre-build script in a build definition on Team Foundation Server.
 		Applies the version number from SharedAssemblyInfo.cs to the assemblies.
-		Optionally increments the build or revision number. The default behavior is to increment the build number
-		and not increment the revision number.
+		Optionally increments the build or revision number. The default behavior is to increment the build number and not increment the revision number.
 		Optionally checks in any changes made to the assembly info files. The default behavior is to check in changes.
 		Changes the build number to match the version number applied to the assemblies.
 
-		Author: Brad Foster
-		Company: Voice4Net
-		Web Page: www.voice4net.com
-		License: Apache
-
 	.DESCRIPTION
 
-		This script assumes that your .NET solution contains an assembly info file, named SharedAssemblyInfo.cs, that is
-		shared across all of the projects as a linked file.
+		This script assumes that your .NET solution contains an assembly info file, named SharedAssemblyInfo.cs, that is shared across all of the projects as a linked file.
 		This layout is described in detail here: http://blogs.msdn.com/b/jjameson/archive/2009/04/03/shared-assembly-info-in-visual-studio-projects.aspx
 		The SharedAssemblyInfo.cs file should at the very least contain an AssemblyVersion attribute.
-		My SharedAssemblyInfo.cs file contains the following attributes:
-			- AssemblyCompany
-			- AssemblyProduct
-			- AssemblyCopyright
-			- AssemblyTrademark
-			- AssemblyVersion
-			- AssemblyFileVersion
-			- AssemblyInformationalVersion
-
-		Each project can still have it's own AssemblyInfo.cs file, but it should not contain any version number attributes,
-		such as AssemblyVersion, AssemblyFileVersion, or AssemblyInformationalVersion.
-
-		My AssemblyInfo.cs files contain the following attributes:
-			- AssemblyTitle
-			- AssemblyCulture
-			- Guid
+		My SharedAssemblyInfo.cs file contains the following attributes: AssemblyCompany, AssemblyProduct, AssemblyCopyright, AssemblyTrademark, AssemblyVersion, AssemblyFileVersion, AssemblyInformationalVersion
+		Each project can still have it's own AssemblyInfo.cs file, but it should not contain any version number attributes (AssemblyVersion, AssemblyFileVersion, or AssemblyInformationalVersion).
+		My AssemblyInfo.cs files contain the following attributes: AssemblyTitle, AssemblyCulture, Guid
 
 		The script locates the SharedAssemblyInfo.cs file after the TFS Build Server has downloaded all of the source files.
-		Then it extracts the current version number from it. Then it optionally increments the version number and overwrites
-		that file with the new version number. It also looks for files named app.rc (version files in C++ projects are named
-		app.rc) and overwrites the version number there	as well.
+		Then it extracts the current version number from it.
+		Then it optionally increments the version number and overwrites that file with the new version number.
+		It also looks for files named app.rc and overwrites the version number there as well. Version files in C++ projects are named app.rc.
 
-		After it has edited all of the assembly info files that contain version numbers,
-		it checks those changes back into source control.
+		After it has edited all of the assembly info files that contain version numbers, it checks those changes back into source control.
 
 		As TFS builds the assemblies the version number applied will match the new version number.
 
-		The name of the build in the build definition should be named something that contains a stubbed out version number,
-		e.g. $(BuildDefinitionName)_$(Date:yyyyMMddHHmmss)_1.0.0.0. The script will update the build number as the build is
-		running so that the build number matches the version from source control as well as the version applied to the
-		assemblies.
+		The name of the build in the build definition should be named something that contains a stubbed out version number, e.g. $(BuildDefinitionName)_$(Date:yyyyMMddHHmmss)_1.0.0.0.
+		The script will update the build number as the build is running so that the build number matches the version from source control as well as the version applied to the assemblies.
 
 		To use this script:
 			1. Check it into source control
@@ -74,6 +51,12 @@
 		increment the revision number before applying the version number to the assemblies
 	.PARAMETER DoNotCheckIn
 		disable checking in changes made to the assembly info files
+	.PARAMETER CheckIn
+		Enable checking in changes made to the assembly info files
+	.PARAMETER CheckForCustomPattern
+	     Check for CustomPattern like specific text in context
+	.PARAMETER CustomPatternString
+	     CustomPattern string to be searched. Parameter CheckForCustomPattern should be enabled for this to be evaluated
 	.EXAMPLE
 		powershell.exe -File .\ApplyVersionFromSourceControl.ps1
 	.EXAMPLE
@@ -86,13 +69,31 @@
 		powershell.exe -File .\ApplyVersionFromSourceControl.ps1 -DoNotIncrement
 	.EXAMPLE
 		powershell.exe -File .\ApplyVersionFromSourceControl.ps1 -IncrementBuildNumber -DoNotCheckIn
+	.EXAMPLE
+		powershell.exe -File .\ApplyVersionFromSourceControl.ps1 -IncrementBuildNumber -DoNotCheckIn 
+	.EXAMPLE
+		powershell.exe -File .\ApplyVersionFromSourceControl.ps1 -CheckForCustomPattern MyCompanyAssemblyText 
+	.EXAMPLE
+		powershell.exe -File .\ApplyVersionFromSourceControl.ps1 -CheckIn -CheckForCustomPattern MyCompanyAssemblyText 
+	.NOTES
+		Author: Brad Foster
+		Company: Voice4Net
+		Web Page: www.voice4net.com
 	.LINK
-		https://github.com/voice4net/build-scripts/blob/master/ApplyVersionFromSourceControl.ps1
+		http://github.com/voice4net/build-scripts/ApplyVersionFromSourceControl.ps1
 #>
 
 [CmdletBinding(PositionalBinding=$false)]
 
-param([switch] $DoNotIncrement=$false,[switch] $IncrementBuildNumber=$true,[switch] $IncrementRevisionNumber=$false,[switch] $DoNotCheckIn=$false)
+param(
+[switch] $DoNotIncrement=$false,
+[switch] $IncrementBuildNumber=$true,
+[switch] $IncrementRevisionNumber=$false,
+[switch] $DoNotCheckIn=$false,
+[switch] $CheckIn=$false,
+[switch] $CheckForCustomPattern=$false , 
+[parameter(ValueFromRemainingArguments=$True)]
+[string] $CustomPatternString)
 
 if ($PSBoundParameters.ContainsKey('DoNotIncrement'))
 {
@@ -108,11 +109,49 @@ elseif ($PSBoundParameters.ContainsKey('IncrementRevisionNumber') -eq $true -and
 	$IncrementBuildNumber=$false
 }
 
+# Override if Checkin is required
+if ($PSBoundParameters.ContainsKey('CheckIn'))
+{
+    $DoNotCheckIn=$false  
+}
+
+#Write-Host "CustomPatternString=$CustomPatternString"
+function File-Content-Contains-Custom-Pattern-Information([string] $filecontent)
+{
+  if([string]::IsNullOrEmpty($CustomPatternString) -eq $false)
+  {
+	 if ($CheckForCustomPattern -eq $true)
+	{
+	  #Write-Host "Checking for custom pattern"
+	  #Write-Host "CustomString : $CustomString"
+	  if($filecontent -match $CustomPatternString -eq $true)
+	  {
+		#Write-Host "------------Returning True-----------------"
+		return $true
+	  }
+	  else
+	  {
+	     #Write-Host "------------Returning false-----------------"
+	     return $false # if pattern is not found
+	  }
+     }
+	 else
+	 {
+	  return $true # if switch is false
+	 }
+   }
+   else
+   {
+      return $true # if custom string is empty
+   }
+}
+
+
 Write-Host "IncrementBuildNumber=$IncrementBuildNumber"
 Write-Host "IncrementRevisionNumber=$IncrementRevisionNumber"
 Write-Host "DoNotCheckIn=$DoNotCheckIn"
-
-function File-Content-Contains-Version-Number([string] $filecontent)
+Write-Host "CheckForCustomPattern=$CheckForCustomPattern"
+function File-Content-Contains-Assembly-Information([string] $filecontent)
 {
 	$pattern='AssemblyVersion\("\d+\.\d+\.\d+\.\d+"\)'
 
@@ -141,7 +180,7 @@ function File-Content-Contains-Version-Number([string] $filecontent)
 	{
 		return $true
 	}
-
+	
 	return $false
 }
 
@@ -202,20 +241,28 @@ function Increment-Version-Number([string] $CurrentVersion)
 	{
 		$revNumber=0
 
-		if ([int32]::TryParse($tokens[3], [ref]$revNumber) -eq $true)
+		if ([int32]::TryParse($tokens[3], [ref]$revNumber) -eq $true -and
+		    $IncrementBuildNumber -eq $false)
 		{
 			$tokens[3]=[string]($revNumber+1)
 		}
+		else
+		{
+		   $revNumber=0 
+		   
+		   # Reset to 0 if Build number is incremented
+		   $tokens[3]=[string]($revNumber)
+		}
 	}
-
+	
 	return [string]::Join(".",$tokens)
 }
 
-function Modify-Build-Number([Microsoft.TeamFoundation.Build.Client.IBuildDetail] $BuildDetail,[string] $NewVersion)
+function Modify-Build-Number([string] $NewVersion)
 {
 	$pattern="\d+\.\d+\.\d+\.\d+"
 
-	$OldBuildNumber=$BuildDetail.BuildNumber
+	$OldBuildNumber=$env:BUILD_BUILDNUMBER
 
 	Write-Host "OldBuildNumber=$OldBuildNumber"
 
@@ -223,33 +270,8 @@ function Modify-Build-Number([Microsoft.TeamFoundation.Build.Client.IBuildDetail
 
 	Write-Host "NewBuildNumber=$NewBuildNumber"
 
-	$OldDropLocation=$BuildDetail.DropLocation
-
-	Write-Host "OldDropLocation=$OldDropLocation"
-
-	$NewDropLocation=$OldDropLocation.Replace($OldBuildNumber,$NewBuildNumber)
-
-	Write-Host "NewDropLocation=$NewDropLocation"
-
-	$OldLabelName=$BuildDetail.LabelName
-
-	Write-Host "OldLabelName=$OldLabelName"
-
-	$NewLabelName=$OldLabelName.Replace($OldBuildNumber,$NewBuildNumber)
-
-	Write-Host "NewLabelName=$NewLabelName"
-
-	# update the build number
-	$BuildDetail.BuildNumber=$NewBuildNumber
-
-	# update the build label name
-	$BuildDetail.LabelName=$NewLabelName
-
-	# update the drop location
-	$BuildDetail.DropLocation=$NewDropLocation
-
-	# save the changes
-	$BuildDetail.Save()
+	Write-Host "##vso[build.updatebuildnumber]$NewBuildNumber"
+	Write-Host ("##vso[task.setvariable variable=NewVersion;]$NewVersion")
 }
 
 function Create-New-File-Content([string] $FileContent,[string] $NewVersion)
@@ -287,10 +309,21 @@ function Create-New-File-Content([string] $FileContent,[string] $NewVersion)
 	return $NewContent
 }
 
-function Get-Source-Location([Microsoft.TeamFoundation.Build.Client.IBuildDefinition] $BuildDefinition,[string] $FileName)
+function Get-Build-Workspace()
 {
-	$SourceDir="$env:TF_BUILD_SOURCESDIRECTORY"
-	$WorkspaceTemplate=$BuildDefinition.Workspace
+	$WorkSpaces=$VersionControlServer.QueryWorkspaces("$env:BUILD_REPOSITORY_TFVC_WORKSPACE",$null,"$env:AGENT_MACHINENAME")
+
+	if ($WorkSpaces.Length -eq 0 -Or $WorkSpaces.Length -gt 1)
+	{
+		return [string]::Empty
+	}
+
+	return $WorkSpaces[0]
+}
+
+function Get-Source-Location([Microsoft.TeamFoundation.VersionControl.Client.Workspace] $WorkSpace,[string] $FileName)
+{
+	$SourceDir="$env:BUILD_SOURCESDIRECTORY"
 	$MatchingLocalItem=[string]::Empty
 	$MatchingServerItem=[string]::Empty
 
@@ -301,11 +334,19 @@ function Get-Source-Location([Microsoft.TeamFoundation.Build.Client.IBuildDefini
 	ServerItem: $/Code_V9_0/Dev/V4Email
 	#>
 
-	foreach ($Mapping in $WorkspaceTemplate.Mappings)
+	foreach ($Mapping in $WorkSpace.Folders)
 	{
 		$LocalItem=$Mapping.LocalItem
 		$ServerItem=$Mapping.ServerItem
-		$LocalPath=$LocalItem.Replace('$(SourceDir)',$SourceDir)
+
+		#Handle Cloak files
+		if (-not [string]::IsNullOrEmpty($Mapping.LocalItem))
+		{
+		 $LocalPath=$LocalItem.Replace('$(SourceDir)',$SourceDir)
+		}
+
+		Write-Host "LocalPath=$LocalItem"
+		Write-Host "ServerPath=$ServerItem"
 
 		if ($FileName.Contains($LocalPath))
 		{
@@ -354,6 +395,8 @@ function Create-Mapping([Microsoft.TeamFoundation.VersionControl.Client.Workspac
 	# create a working folder mapping
 	$Mapping=New-Object Microsoft.TeamFoundation.VersionControl.Client.WorkingFolder -ArgumentList $SourcePath,$TempPath
 
+	Write-Host "Mapping=$Mapping"
+
 	# add the mapping to the workspace
 	$WorkSpace.CreateMapping($Mapping)
 
@@ -390,7 +433,7 @@ function Check-In-Pending-Changes([Microsoft.TeamFoundation.VersionControl.Clien
 	$PendingChanges=$WorkSpace.GetPendingChanges()
 
 	# create a check-in comment
-	$Comment=[string]::Format("version {0} checked in by TFS Build Server",$NewVersion)
+	$Comment=[string]::Format("Auto-Build version {0} checked in by TFS Build Server",$NewVersion)
 
 	# check in pending changes
 	$ChangeSet=$WorkSpace.CheckIn($PendingChanges,$Comment)
@@ -404,27 +447,21 @@ function Remove-Mapping([Microsoft.TeamFoundation.VersionControl.Client.Workspac
 	$WorkSpace.DeleteMapping($Mapping)
 }
 
-if (-not $env:TF_BUILD_SOURCESDIRECTORY)
+if (-not $env:BUILD_SOURCESDIRECTORY)
 {
-	Write-Host ("TF_BUILD_SOURCESDIRECTORY environment variable is missing.")
+	Write-Host ("BUILD_SOURCESDIRECTORY environment variable is missing.")
 	exit 1
 }
 
-if (-not (Test-Path $env:TF_BUILD_SOURCESDIRECTORY))
+if (-not (Test-Path $env:BUILD_SOURCESDIRECTORY))
 {
-	Write-Host "TF_BUILD_SOURCESDIRECTORY does not exist: $Env:TF_BUILD_SOURCESDIRECTORY"
+	Write-Host "BUILD_SOURCESDIRECTORY does not exist: $Env:BUILD_SOURCESDIRECTORY"
 	exit 1
 }
 
-if (-not $env:TF_BUILD_BUILDURI)
+if (-not $env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI)
 {
-	Write-Host ("TF_BUILD_BUILDURI environment variable is missing.")
-	exit 1
-}
-
-if (-not $env:TF_BUILD_COLLECTIONURI)
-{
-	Write-Host ("TF_BUILD_COLLECTIONURI environment variable is missing.")
+	Write-Host ("SYSTEM_TEAMFOUNDATIONCOLLECTIONURI environment variable is missing.")
 	exit 1
 }
 
@@ -434,16 +471,18 @@ if (-not $env:TEMP)
 	exit 1
 }
 
-Write-Host "TF_BUILD_SOURCESDIRECTORY: $env:TF_BUILD_SOURCESDIRECTORY"
-Write-Host "TF_BUILD_BUILDURI: $env:TF_BUILD_BUILDURI"
-Write-Host "TF_BUILD_COLLECTIONURI: $env:TF_BUILD_COLLECTIONURI"
+Write-Host "BUILD_SOURCESDIRECTORY: $env:BUILD_SOURCESDIRECTORY"
+Write-Host "SYSTEM_TEAMFOUNDATIONCOLLECTIONURI: $env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI"
+Write-Host "BUILD_REPOSITORY_TFVC_WORKSPACE: $env:BUILD_REPOSITORY_TFVC_WORKSPACE"
+Write-Host "BUILD_BUILDNUMBER: $env:BUILD_BUILDNUMBER"
+Write-Host "AGENT_MACHINENAME: $env:AGENT_MACHINENAME"
 Write-Host "TEMP: $env:TEMP"
 
 $CurrentVersion=[string]::Empty
 $NewVersion=[string]::Empty
 
 # find the SharedAssemblyInfo.cs file
-$files=Get-ChildItem $Env:TF_BUILD_SOURCESDIRECTORY -recurse -include SharedAssemblyInfo.cs
+$files=Get-ChildItem $env:BUILD_SOURCESDIRECTORY -recurse -include SharedAssemblyInfo.cs,SolutionInfo.cpp
 
 if ($files -and $files.count -gt 0)
 {
@@ -455,9 +494,16 @@ if ($files -and $files.count -gt 0)
 		$FileContent=[IO.File]::ReadAllText($file,[Text.Encoding]::Default)
 
 		# check the file contents for a version number
-		if (-not (File-Content-Contains-Version-Number($FileContent)))
+		if (-not (File-Content-Contains-Assembly-Information($FileContent)))
 		{
 			# this file does not contain a version number. keep searching...
+			continue
+		}
+		
+		# check further if custom pattern is applicable for current file
+		if (-not (File-Content-Contains-Custom-Pattern-Information($FileContent)))
+		{
+			# this file does not contain Custom Pattern ...
 			continue
 		}
 
@@ -482,25 +528,18 @@ if ([string]::IsNullOrEmpty($CurrentVersion))
 }
 
 # load the TFS assemblies
-[void][System.Reflection.Assembly]::LoadWithPartialName("Microsoft.TeamFoundation.Client")
-[void][System.Reflection.Assembly]::LoadWithPartialName("Microsoft.TeamFoundation.Build.Client")
-[void][System.Reflection.Assembly]::LoadWithPartialName("Microsoft.TeamFoundation.VersionControl.Client")
+[void][System.Reflection.Assembly]::LoadFrom('C:\Program Files (x86)\Microsoft Team Foundation Server 2015 Power Tools\Microsoft.TeamFoundation.Client.dll')
+[void][System.Reflection.Assembly]::LoadFrom('C:\Program Files (x86)\Microsoft Team Foundation Server 2015 Power Tools\Microsoft.TeamFoundation.Build.Client.dll')
+[void][System.Reflection.Assembly]::LoadFrom('C:\Program Files (x86)\Microsoft Team Foundation Server 2015 Power Tools\Microsoft.TeamFoundation.Build.Common.dll')
+[void][System.Reflection.Assembly]::LoadFrom('C:\Program Files (x86)\Microsoft Team Foundation Server 2015 Power Tools\Microsoft.TeamFoundation.Core.WebApi.dll')
+[void][System.Reflection.Assembly]::LoadFrom('C:\Program Files (x86)\Microsoft Team Foundation Server 2015 Power Tools\Microsoft.TeamFoundation.VersionControl.Client.dll')
+[void][System.Reflection.Assembly]::LoadFrom('C:\Program Files (x86)\Microsoft Team Foundation Server 2015 Power Tools\Microsoft.TeamFoundation.WorkItemTracking.Client.dll')
 
 # get the TFS URLs from environment variables
-$CollectionUrl="$env:TF_BUILD_COLLECTIONURI"
-$BuildUrl="$env:TF_BUILD_BUILDURI"
+$CollectionUrl="$env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI"
 
 # get the team project collection
 $TeamProjectCollection=[Microsoft.TeamFoundation.Client.TfsTeamProjectCollectionFactory]::GetTeamProjectCollection($CollectionUrl)
-
-# get the build server
-$BuildServer=$TeamProjectCollection.GetService([Microsoft.TeamFoundation.Build.Client.IBuildServer])
-
-# get the build detail
-$BuildDetail=$BuildServer.GetBuild($BuildUrl)
-
-# get the build definition
-$BuildDefinition=$BuildDetail.BuildDefinition
 
 # check the DoNotCheckIn flag
 if ($DoNotCheckIn -eq $false)
@@ -508,8 +547,11 @@ if ($DoNotCheckIn -eq $false)
 	# get the version control server
 	$VersionControlServer=$TeamProjectCollection.GetService([Microsoft.TeamFoundation.VersionControl.Client.VersionControlServer])
 
+	# get the workspace for this build definition
+	$BuildWorkSpace=Get-Build-Workspace
+
 	# create a temporary workspace. workspace names must be unique, therefore use a guid
-	$WorkSpace=$VersionControlServer.CreateWorkSpace([string]([GUID]::NewGuid()))
+	$TempWorkSpace=$VersionControlServer.CreateWorkSpace([string]([GUID]::NewGuid()))
 }
 
 # check the increment flags
@@ -526,30 +568,38 @@ else
 
 Write-Host "NewVersion=$NewVersion"
 
-# change the build number and drop location
-Modify-Build-Number $BuildDetail $NewVersion
+# change the build number
+Modify-Build-Number $NewVersion
 
 # find all files that might contain version numbers
-$files=Get-ChildItem $Env:TF_BUILD_SOURCESDIRECTORY -recurse -include SharedAssemblyInfo.cs,AssemblyInfo.cs,app.rc
+$files=Get-ChildItem $Env:BUILD_SOURCESDIRECTORY -recurse -include SharedAssemblyInfo.cs,AssemblyInfo.cs,app.rc,SolutionInfo.cpp
+$FileMappings=@()
 
 if ($files -and $files.count -gt 0)
 {
 	foreach ($file in $files)
 	{
 		# read the file contents
-		$FileContent=[IO.File]::ReadAllText($file,[Text.Encoding]::Default)
+		$FileContent=[IO.File]::ReadAllText($file,[Text.Encoding]::Default).Trim()
 
 		# check the file contents for a version number
-		if (-not (File-Content-Contains-Version-Number($FileContent)))
+		if (-not (File-Content-Contains-Assembly-Information($FileContent)))
 		{
 			# this file does not contain a version number
 			continue
 		}
-
+		
+		# check further if custom pattern is applicable for current file
+		if (-not (File-Content-Contains-Custom-Pattern-Information($FileContent)))
+		{
+			# this file does not contain Custom Pattern ...
+			continue
+		}
+		
 		Write-Host "FileName=$file"
 
 		# overwrite the old version number with the new version number
-		$NewContent=Create-New-File-Content $FileContent $NewVersion
+		$NewContent=Create-New-File-Content $FileContent $NewVersion 
 
 		# overwrite the contents of the file
 		Set-Content -path $file -value $NewContent -encoding String -force
@@ -561,8 +611,12 @@ if ($files -and $files.count -gt 0)
 			continue
 		}
 
-		# get the source location of this file
-		$SourceLocation=Get-Source-Location $BuildDefinition $file
+		# get the source location of this file with valid workspace mapping
+        if (-not [string]::IsNullOrEmpty($BuildWorkSpace) -and
+            -not [string]::IsNullOrEmpty($file))
+		{
+           $SourceLocation=Get-Source-Location $BuildWorkSpace $file
+        }
 
 		if ([string]::IsNullOrEmpty($SourceLocation))
 		{
@@ -576,25 +630,38 @@ if ($files -and $files.count -gt 0)
 		Write-Host "TempPath=$TempPath"
 
 		# create a working folder mapping
-		$Mapping=Create-Mapping $WorkSpace $SourceLocation $TempPath
+		$Mapping=Create-Mapping $TempWorkSpace $SourceLocation $TempPath
+		$FileMapping = @{}
+		$FileMapping.File = $TempPath
+		$FileMapping.Mapping = $Mapping
+		$FileMappings += $FileMapping
 
 		# get the latest version and check it out
-		Check-Out $WorkSpace $SourceLocation $TempPath
+		Check-Out $TempWorkSpace $SourceLocation $TempPath
 
 		# overwrite the contents of the checked out file
 		Set-Content -path $TempPath -value $NewContent -encoding String -force
-
+	}
+	
+	if ($DoNotCheckIn -eq $false)
+	{
 		# check in the pending change
-		Check-In-Pending-Changes $WorkSpace $NewVersion
+		Check-In-Pending-Changes $TempWorkSpace $NewVersion
+		
+		if ($FileMappings -and $FileMappings.count -gt 0)
+		{
+			foreach ($FileMapping in $FileMappings)
+			{
+				# remove the mapping from the workspace
+				Remove-Mapping $TempWorkSpace $FileMapping.Mapping
 
-		# remove the mapping from the workspace
-		Remove-Mapping $WorkSpace $Mapping
+				# change the file attributes so it can be deleted
+				[IO.File]::SetAttributes($FileMapping.File, [IO.FileAttributes]::Normal)
 
-		# change the file attributes so it can be deleted
-		[IO.File]::SetAttributes($TempPath, [IO.FileAttributes]::Normal)
-
-		# delete the temp file
-		[IO.File]::Delete($TempPath)
+				# delete the temp file
+				[IO.File]::Delete($FileMapping.File)
+			}
+		}
 	}
 }
 else
@@ -602,8 +669,8 @@ else
 	Write-Host "found no assembly info files."
 }
 
-if ($WorkSpace)
+if ($TempWorkSpace)
 {
 	# delete the workspace
-	[void]$WorkSpace.Delete()
+	[void]$TempWorkSpace.Delete()
 }
